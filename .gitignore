@@ -1,0 +1,23 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environment and secrets
+.env
+service_account.json
+credentials.json
+
+# Scratch and temp files
+scratch/
+tmp/
+temp/
+*.zip
+*.log
