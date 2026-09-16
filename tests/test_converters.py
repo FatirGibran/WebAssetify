@@ -69,3 +69,43 @@ def test_transcode_to_webm_cli_arguments(mock_run, tmp_path: Path):
     assert "-threads" in cmd and "1" in cmd
     assert "-speed" in cmd and "4" in cmd
     assert "-c:a" in cmd and "libopus" in cmd
+
+
+def test_process_image_with_dimension_scaling(tmp_path: Path):
+    # Create large image 1000 x 500
+    img = Image.new("RGB", (1000, 500), color="red")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    raw_bytes = buf.getvalue()
+
+    output_webp = tmp_path / "scaled.webp"
+    success = _process_image_to_webp(raw_bytes, output_webp, quality=80, max_dimension=400)
+
+    assert success is True
+    assert output_webp.exists()
+    with Image.open(output_webp) as loaded:
+        # Longest dimension should be capped at 400, preserving 2:1 aspect ratio (400, 200)
+        assert loaded.size == (400, 200)
+
+
+@pytest.mark.asyncio
+async def test_convert_direct_image_and_savings(tmp_path: Path):
+    img = Image.new("RGB", (200, 200), color="green")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    raw_bytes = buf.getvalue()
+
+    converter = ImageConverter(quality=75, max_image_dimension=500)
+    out_file = tmp_path / "direct.webp"
+
+    res = await converter.convert_direct_image(raw_bytes, out_file, source_name="test_upload.png")
+    assert res == out_file
+    assert out_file.exists()
+    assert len(converter.stats) == 1
+
+    savings = converter.total_savings
+    assert savings["original_bytes"] == len(raw_bytes)
+    assert savings["converted_bytes"] == out_file.stat().st_size
+    assert savings["saved_bytes"] >= 0
+    assert 0.0 <= savings["saved_percentage"] <= 100.0
+

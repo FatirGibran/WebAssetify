@@ -8,6 +8,7 @@ def test_config_defaults():
     assert cfg.port == 8080
     assert cfg.max_video_height == 720
     assert cfg.webp_quality == 80
+    assert cfg.max_image_dimension == 2560
 
 
 def test_config_validation_missing_secrets():
@@ -20,12 +21,13 @@ def test_config_validation_missing_secrets():
 
 
 def test_config_validation_invalid_bounds():
-    cfg = Config(port=-1, max_video_height=0, webp_quality=150)
+    cfg = Config(port=-1, max_video_height=0, webp_quality=150, max_image_dimension=0)
     errors = cfg.validate(check_secrets=False)
-    assert len(errors) == 3
+    assert len(errors) == 4
     assert any("PORT" in e for e in errors)
     assert any("MAX_VIDEO_HEIGHT" in e for e in errors)
     assert any("WEBP_QUALITY" in e for e in errors)
+    assert any("MAX_IMAGE_DIMENSION" in e for e in errors)
 
 
 def test_config_safe_dict_masks_secrets():
@@ -38,3 +40,4 @@ def test_config_safe_dict_masks_secrets():
     assert safe["telegram_bot_token"].startswith("1234...")
     assert safe["telegram_bot_token"].endswith("wxyz")
     assert safe["gdrive_service_account_json"] == "<configured>"
+    assert safe["max_image_dimension"] == 2560

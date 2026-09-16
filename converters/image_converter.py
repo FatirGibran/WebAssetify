@@ -12,10 +12,11 @@ import io
 import logging
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
-from PIL import Image
+from PIL import Image, ImageOps
 
 from config import config
 
@@ -32,14 +33,33 @@ DEFAULT_HEADERS = {
 MAX_IMAGE_BYTES = 25 * 1024 * 1024  # 25 MB limit to prevent OOM
 
 
-def _process_image_to_webp(image_data: bytes, output_path: Path, quality: int) -> bool:
+def _process_image_to_webp(
+    image_data: bytes,
+    output_path: Path,
+    quality: int,
+    max_dimension: int | None = None,
+) -> bool:
     """Synchronous worker function to convert image bytes to .webp via Pillow.
 
+    Includes EXIF orientation correction and dimension downscaling.
     Offloaded to asyncio.to_thread.
     """
     try:
-        with Image.open(io.BytesIO(image_data)) as img:
-            # Handle color mode conversions
+        with Image.open(io.BytesIO(image_data)) as raw_img:
+            # 1. Correct orientation using EXIF transpose
+            img = ImageOps.exif_transpose(raw_img)
+            if img is None:
+                img = raw_img
+
+            # 2. Downscale if dimension exceeds max_dimension
+            if max_dimension and (img.width > max_dimension or img.height > max_dimension):
+                ratio = min(max_dimension / img.width, max_dimension / img.height)
+                new_width = max(1, int(img.width * ratio))
+                new_height = max(1, int(img.height * ratio))
+                resample = getattr(Image, "Resampling", Image).LANCZOS
+                img = img.resize((new_width, new_height), resample=resample)
+
+            # 3. Handle color mode conversions
             if img.mode in ("RGBA", "LA"):
                 converted = img
             elif img.mode == "P":
@@ -76,12 +96,29 @@ class ImageConverter:
     def __init__(
         self,
         quality: int | None = None,
+        max_image_dimension: int | None = None,
         max_concurrent_downloads: int = 3,
         session: aiohttp.ClientSession | None = None,
     ) -> None:
         self.quality = quality or config.webp_quality
+        self.max_dimension = max_image_dimension or config.max_image_dimension
         self.semaphore = asyncio.Semaphore(max_concurrent_downloads)
         self._external_session = session
+        self.stats: list[dict[str, Any]] = []
+
+    @property
+    def total_savings(self) -> dict[str, Any]:
+        """Aggregate original vs converted size metrics across all processed images."""
+        total_orig = sum(s.get("original_bytes", 0) for s in self.stats)
+        total_conv = sum(s.get("converted_bytes", 0) for s in self.stats)
+        saved = max(0, total_orig - total_conv)
+        pct = (saved / total_orig * 100) if total_orig > 0 else 0.0
+        return {
+            "original_bytes": total_orig,
+            "converted_bytes": total_conv,
+            "saved_bytes": saved,
+            "saved_percentage": pct,
+        }
 
     @staticmethod
     def _generate_filename(url: str, index: int) -> str:
@@ -98,6 +135,43 @@ class ImageConverter:
             clean_name = f"{index:03d}_{clean_name[:40]}"
 
         return f"{clean_name}.webp"
+
+    async def convert_direct_image(
+        self,
+        image_bytes: bytes,
+        output_path: Path,
+        source_name: str = "direct_upload",
+    ) -> Path | None:
+        """Optimize direct image bytes (e.g. from Telegram photo/file) to .webp."""
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            logger.warning(
+                "Direct image %s exceeds size limit (%d bytes)",
+                source_name,
+                len(image_bytes),
+            )
+            return None
+
+        success = await asyncio.to_thread(
+            _process_image_to_webp,
+            image_bytes,
+            output_path,
+            self.quality,
+            self.max_dimension,
+        )
+
+        if success and output_path.exists():
+            out_size = output_path.stat().st_size
+            self.stats.append({
+                "source": source_name,
+                "output_name": output_path.name,
+                "original_bytes": len(image_bytes),
+                "converted_bytes": out_size,
+                "saved_bytes": max(0, len(image_bytes) - out_size),
+            })
+            logger.info("Successfully converted direct image %s -> %s", source_name, output_path.name)
+            return output_path
+
+        return None
 
     async def download_and_convert(
         self,
@@ -158,9 +232,18 @@ class ImageConverter:
                     content,
                     output_path,
                     self.quality,
+                    self.max_dimension,
                 )
 
                 if success and output_path.exists():
+                    out_size = output_path.stat().st_size
+                    self.stats.append({
+                        "source": url,
+                        "output_name": output_path.name,
+                        "original_bytes": len(content),
+                        "converted_bytes": out_size,
+                        "saved_bytes": max(0, len(content) - out_size),
+                    })
                     logger.info("Successfully optimized %s -> %s", url, output_path.name)
                     return output_path
 

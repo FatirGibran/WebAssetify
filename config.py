@@ -31,6 +31,7 @@ class Config:
     # Media Optimization
     max_video_height: int = int(os.getenv("MAX_VIDEO_HEIGHT", "720"))
     webp_quality: int = int(os.getenv("WEBP_QUALITY", "80"))
+    max_image_dimension: int = int(os.getenv("MAX_IMAGE_DIMENSION", "2560"))
 
     # Scratch Directory
     temp_dir: Path = Path(os.getenv("TEMP_DIR", "/tmp/webassetify"))
@@ -60,6 +61,11 @@ class Config:
                 f"Invalid WEBP_QUALITY: {self.webp_quality}. Must be between 1 and 100."
             )
 
+        if self.max_image_dimension <= 0:
+            errors.append(
+                f"Invalid MAX_IMAGE_DIMENSION: {self.max_image_dimension}. Must be positive."
+            )
+
         return errors
 
     def to_safe_dict(self) -> dict[str, str | int]:
@@ -78,6 +84,7 @@ class Config:
             "port": self.port,
             "max_video_height": self.max_video_height,
             "webp_quality": self.webp_quality,
+            "max_image_dimension": self.max_image_dimension,
             "temp_dir": str(self.temp_dir),
         }
 
