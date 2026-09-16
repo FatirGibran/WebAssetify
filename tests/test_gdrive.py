@@ -75,14 +75,21 @@ async def test_upload_pipeline(tmp_path: Path):
         mock_upload_file.return_value = {"id": "uploaded_file_id"}
         mock_share.return_value = None
 
-        result = await storage.upload_pipeline(scratch, user_id=12345)
+        sample_stats = {
+            "original_bytes": 1000,
+            "converted_bytes": 400,
+            "saved_bytes": 600,
+            "saved_percentage": 60.0,
+        }
+        result = await storage.upload_pipeline(scratch, user_id=12345, session_stats=sample_stats)
 
         assert result["folder_id"] == "root_folder_id"
         assert result["web_view_link"] == "https://drive.google.com/folders/root"
         assert result["images_count"] == 1
         assert result["videos_count"] == 1
         assert result["has_bundle"] is True
+        assert result["manifest_created"] is True
 
         assert mock_create_folder.call_count == 3  # root, images, videos
-        assert mock_upload_file.call_count == 3  # 1 image, 1 video, 1 bundle zip
+        assert mock_upload_file.call_count == 5  # 1 img, 1 vid, 1 bundle zip, 1 manifest.json, 1 session_summary.txt
         mock_share.assert_called_once_with("root_folder_id")

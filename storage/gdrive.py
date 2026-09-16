@@ -30,6 +30,8 @@ MIME_FOLDER = "application/vnd.google-apps.folder"
 MIME_ZIP = "application/zip"
 MIME_WEBP = "image/webp"
 MIME_WEBM = "video/webm"
+MIME_JSON = "application/json"
+MIME_TEXT = "text/plain"
 
 
 def _create_bundle_zip_sync(scratch_dir: Path, zip_output_path: Path) -> Path:
@@ -44,6 +46,13 @@ def _create_bundle_zip_sync(scratch_dir: Path, zip_output_path: Path) -> Path:
                         # Store in archive as images/filename or videos/filename
                         arcname = f"{sub_name}/{file_path.name}"
                         zipf.write(file_path, arcname=arcname)
+
+        # Include session manifest and summary if present
+        for report_file in ("manifest.json", "session_summary.txt"):
+            rf_path = scratch_dir / report_file
+            if rf_path.is_file():
+                zipf.write(rf_path, arcname=report_file)
+
     return zip_output_path
 
 
@@ -138,6 +147,10 @@ class GoogleDriveStorage:
                 mime_type = MIME_WEBM
             elif ext == ".zip":
                 mime_type = MIME_ZIP
+            elif ext == ".json":
+                mime_type = MIME_JSON
+            elif ext in (".txt", ".log", ".md"):
+                mime_type = MIME_TEXT
             else:
                 mime_type = "application/octet-stream"
 
@@ -204,14 +217,17 @@ class GoogleDriveStorage:
         self,
         scratch_dir: Path,
         user_id: int | str,
+        session_stats: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run the full Google Drive upload workflow for a processed batch.
 
         1. Creates root folder: WebAssetify_{Timestamp}_{user_id}
         2. Creates 'images' and 'videos' subfolders and uploads contents.
-        3. Creates assets_bundle.zip and uploads it to root folder.
-        4. Shares root folder with anyone as reader.
-        5. Returns webViewLink and asset statistics.
+        3. Generates manifest.json and session_summary.txt.
+        4. Creates assets_bundle.zip (including manifest) and uploads it to root folder.
+        5. Uploads manifest.json and session_summary.txt to root folder.
+        6. Shares root folder with anyone as reader.
+        7. Returns webViewLink and asset statistics.
         """
         if not self.parent_folder_id:
             raise ValueError("GDRIVE_PARENT_FOLDER_ID is required for upload.")
@@ -246,17 +262,54 @@ class GoogleDriveStorage:
                     await self.upload_file(vid, videos_subfolder["id"], MIME_WEBM)
                     videos_count += 1
 
-        # 4. Create and upload assets_bundle.zip to root folder
+        # 4. Generate manifest.json and session_summary.txt
+        manifest_data = {
+            "service": "WebAssetify",
+            "timestamp": now_str,
+            "user_id": str(user_id),
+            "images_count": images_count,
+            "videos_count": videos_count,
+            "savings": session_stats or {},
+        }
+        manifest_path = scratch_dir / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
+
+        summary_text = (
+            f"WebAssetify Session Report\n"
+            f"==========================\n"
+            f"Timestamp: {now_str}\n"
+            f"User ID: {user_id}\n"
+            f"Optimized Images: {images_count}\n"
+            f"Transcoded Videos: {videos_count}\n"
+        )
+        if session_stats:
+            orig_mb = session_stats.get("original_bytes", 0) / (1024 * 1024)
+            conv_mb = session_stats.get("converted_bytes", 0) / (1024 * 1024)
+            saved_mb = session_stats.get("saved_bytes", 0) / (1024 * 1024)
+            pct = session_stats.get("saved_percentage", 0.0)
+            summary_text += (
+                f"Original Size: {orig_mb:.2f} MB\n"
+                f"Optimized Size: {conv_mb:.2f} MB\n"
+                f"Storage Saved: {saved_mb:.2f} MB ({pct:.1f}%)\n"
+            )
+        summary_path = scratch_dir / "session_summary.txt"
+        summary_path.write_text(summary_text, encoding="utf-8")
+
+        # 5. Create and upload assets_bundle.zip to root folder
         zip_path = scratch_dir / "assets_bundle.zip"
         await asyncio.to_thread(_create_bundle_zip_sync, scratch_dir, zip_path)
 
         if zip_path.exists() and zip_path.stat().st_size > 0:
             await self.upload_file(zip_path, root_folder_id, MIME_ZIP)
 
-        # 5. Make root folder publicly readable
+        # 6. Upload manifest and summary directly to root folder
+        await self.upload_file(manifest_path, root_folder_id, MIME_JSON)
+        await self.upload_file(summary_path, root_folder_id, MIME_TEXT)
+
+        # 7. Make root folder publicly readable
         await self.share_folder_public(root_folder_id)
 
-        # 6. Retrieve latest webViewLink
+        # 8. Retrieve latest webViewLink
         web_view_link = root_folder.get("webViewLink")
         if not web_view_link:
             web_view_link = f"https://drive.google.com/drive/folders/{root_folder_id}"
@@ -268,4 +321,5 @@ class GoogleDriveStorage:
             "images_count": images_count,
             "videos_count": videos_count,
             "has_bundle": zip_path.exists(),
+            "manifest_created": manifest_path.exists(),
         }
