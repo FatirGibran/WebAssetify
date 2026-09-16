@@ -19,6 +19,7 @@ from typing import Any
 import yt_dlp
 
 from config import config
+from parsers.security import is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,10 @@ class VideoConverter:
         """Download and transcode a single video URL to .webm."""
         output_dir.mkdir(parents=True, exist_ok=True)
         raw_download: Path | None = None
+
+        if not is_safe_url(url):
+            logger.warning("SSRF Guard blocked unsafe video URL: %s", url)
+            return None
 
         async with _TRANSCODE_LOCK:
             try:
