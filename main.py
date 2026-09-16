@@ -1,7 +1,8 @@
 """WebAssetify entrypoint and orchestrator.
 
 Runs a keep-alive aiohttp micro-webserver concurrently with python-telegram-bot v20+ polling loop
-in the same asyncio event loop.
+in the same asyncio event loop. Supports URL extraction from documents, direct media optimization,
+and Google Drive delivery with manifest reports.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import os
 import shutil
 import signal
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -29,10 +31,16 @@ from telegram.ext import (
 
 from config import config
 from converters.image_converter import ImageConverter
-from converters.video_converter import VideoConverter
+from converters.video_converter import VideoConverter, _transcode_to_webm_sync
 from parsers.docx_parser import extract_urls_from_docx
+from parsers.html_parser import extract_urls_from_html
 from parsers.pdf_parser import extract_urls_from_pdf
-from parsers.universal import classify_urls, extract_urls
+from parsers.universal import (
+    classify_urls,
+    extract_urls,
+    extract_urls_from_json,
+    extract_urls_from_tabular,
+)
 from storage.gdrive import GoogleDriveStorage
 
 # Configure structured logging
@@ -43,13 +51,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("webassetify")
 
-# Supported document extensions
-DOCUMENT_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
+# Service boot timestamp for uptime tracking
+START_TIME = time.time()
+
+# Supported document and media extensions
+DOCUMENT_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".html", ".htm", ".csv", ".tsv", ".json"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".svg", ".avif"}
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi", ".flv", ".wmv", ".ts"}
 
 
 async def health_endpoint(request: web.Request) -> web.Response:
     """Keep-alive health check endpoint for UptimeRobot and Render."""
-    return web.json_response({"status": "alive", "service": "WebAssetify"})
+    uptime_seconds = int(time.time() - START_TIME)
+    return web.json_response({
+        "status": "alive",
+        "service": "WebAssetify",
+        "uptime_seconds": uptime_seconds,
+    })
 
 
 def create_web_app() -> web.Application:
@@ -66,12 +84,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "⚡ *Welcome to WebAssetify!*\n\n"
         "I am your automated asset harvesting and web optimization pipeline.\n\n"
         "*What I do:*\n"
-        "• Extract media links from documents (`.md`, `.txt`, `.pdf`, `.docx`) or raw text.\n"
-        "• Automatically convert images to modern, lightweight *.webp*.\n"
-        "• Transcode video links (YouTube, MP4, etc.) to low-memory *.webm*.\n"
-        "• Package everything into Google Drive with an `assets_bundle.zip`.\n\n"
+        "• Extract media links from documents (`.md`, `.txt`, `.pdf`, `.docx`, `.html`, `.csv`, `.json`) or raw text.\n"
+        "• Accept direct photos and videos sent in chat for automatic web conversion.\n"
+        "• Optimize images to lightweight *.webp* with EXIF correction.\n"
+        "• Transcode videos to low-memory *.webm* via FFmpeg.\n"
+        "• Upload everything to Google Drive with an `assets_bundle.zip` and manifest report.\n\n"
         "*How to use:*\n"
-        "Send me any supported document or paste a text message containing URLs."
+        "• Send me a document or raw URLs.\n"
+        "• Send a photo or video directly.\n"
+        "• Type /status to view system status and settings."
     )
     if update.message:
         await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
@@ -84,14 +105,55 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Supported Documents:*\n"
         "• `.md` / `.txt` - Plain text and Markdown links (`[title](url)` or `![alt](url)`)\n"
         "• `.pdf` - Visible text and embedded URI hyperlink annotations\n"
-        "• `.docx` - Word text, tables, and internal XML hyperlinks\n\n"
-        "*Direct Text:*\n"
-        "You can also paste a list of URLs directly into chat.\n\n"
+        "• `.docx` - Word text, tables, and internal XML hyperlinks\n"
+        "• `.html` / `.htm` - HTML tags (`img`, `video`, `source`, `a`, inline CSS)\n"
+        "• `.csv` / `.tsv` - Tabular spreadsheets with URL columns\n"
+        "• `.json` - JSON files containing media links\n\n"
+        "*Direct Media:*\n"
+        "• Send any Photo or Video directly in chat.\n\n"
+        "*Commands:*\n"
+        "• `/start` - Introduction and usage overview\n"
+        "• `/help` - Show this help menu\n"
+        "• `/status` - Uptime, settings, and memory diagnostics\n"
+        "• `/ping` - Latency check\n\n"
         "*Outputs:*\n"
-        "A public Google Drive folder containing `images/`, `videos/`, and `assets_bundle.zip`."
+        "A public Google Drive folder containing `images/`, `videos/`, `manifest.json`, and `assets_bundle.zip`."
     )
     if update.message:
         await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /status command: reports service health, uptime, and configuration."""
+    uptime_seconds = int(time.time() - START_TIME)
+    hours, remainder = divmod(uptime_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    uptime_str = f"{hours}h {minutes}m {seconds}s"
+    safe_cfg = config.to_safe_dict()
+
+    status_text = (
+        "📊 *WebAssetify System Status*\n\n"
+        f"• *Status:* 🟢 Operational\n"
+        f"• *Uptime:* `{uptime_str}`\n"
+        f"• *Server Port:* `{config.port}`\n"
+        f"• *WebP Quality:* `{config.webp_quality}`\n"
+        f"• *Max Image Dimension:* `{config.max_image_dimension}px`\n"
+        f"• *Max Video Height:* `{config.max_video_height}p`\n"
+        f"• *Supported Docs:* `{len(DOCUMENT_EXTENSIONS)} formats`\n"
+        f"• *Drive Parent Folder:* `{safe_cfg['gdrive_parent_folder_id']}`\n"
+        f"• *Drive Credentials:* `{safe_cfg['gdrive_service_account_json']}`"
+    )
+    if update.message:
+        await update.message.reply_text(status_text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /ping command: fast latency diagnostic."""
+    start = time.time()
+    if update.message:
+        msg = await update.message.reply_text("🏓 Pong...")
+        elapsed_ms = int((time.time() - start) * 1000)
+        await msg.edit_text(f"🏓 *Pong!* `({elapsed_ms} ms)`", parse_mode=ParseMode.MARKDOWN)
 
 
 async def _process_pipeline(
@@ -125,6 +187,14 @@ async def _process_pipeline(
             if ext in (".txt", ".md"):
                 text_content = doc_bytes.decode("utf-8", errors="replace")
                 extracted_urls = extract_urls(text_content)
+            elif ext in (".html", ".htm"):
+                extracted_urls = extract_urls_from_html(doc_bytes)
+            elif ext in (".csv", ".tsv"):
+                text_content = doc_bytes.decode("utf-8", errors="replace")
+                extracted_urls = extract_urls_from_tabular(text_content)
+            elif ext == ".json":
+                text_content = doc_bytes.decode("utf-8", errors="replace")
+                extracted_urls = extract_urls_from_json(text_content)
             elif ext == ".pdf":
                 extracted_urls = extract_urls_from_pdf(doc_bytes)
             elif ext == ".docx":
@@ -203,18 +273,33 @@ async def _process_pipeline(
             parse_mode=ParseMode.MARKDOWN,
         )
 
+        savings = image_converter.total_savings
         gdrive = GoogleDriveStorage()
-        upload_result = await gdrive.upload_pipeline(scratch_dir, user_id=user_id)
+        upload_result = await gdrive.upload_pipeline(
+            scratch_dir,
+            user_id=user_id,
+            session_stats=savings,
+        )
 
         # Step 5: Send final report
         folder_link = upload_result["web_view_link"]
         folder_name = upload_result["folder_name"]
+
+        savings_text = ""
+        if savings.get("original_bytes", 0) > 0:
+            orig_mb = savings["original_bytes"] / (1024 * 1024)
+            conv_mb = savings["converted_bytes"] / (1024 * 1024)
+            pct = savings.get("saved_percentage", 0.0)
+            savings_text = f"💾 *Storage Saved:* {orig_mb:.2f} MB ➔ {conv_mb:.2f} MB ({pct:.1f}% reduction)\n"
+
         final_message = (
             "✅ *Asset Optimization & Upload Complete!*\n\n"
             f"📁 *Folder:* `{folder_name}`\n"
             f"🖼️ *Optimized Images (.webp):* {upload_result['images_count']}\n"
             f"🎥 *Transcoded Videos (.webm):* {upload_result['videos_count']}\n"
-            f"📦 *Bundle Zip:* Included (`assets_bundle.zip`)\n\n"
+            f"{savings_text}"
+            f"📦 *Bundle Zip:* Included (`assets_bundle.zip`)\n"
+            f"📄 *Manifest:* Included (`manifest.json`)\n\n"
             f"🔗 [Open Google Drive Folder]({folder_link})"
         )
         await status_msg.edit_text(
@@ -263,8 +348,189 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle direct Telegram photo uploads."""
+    if not update.message or not update.message.photo:
+        return
+
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    status_msg = await update.message.reply_text(
+        "⏳ *WebAssetify:* Downloading photo...",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    photo = update.message.photo[-1]  # Highest resolution
+    job_id = uuid.uuid4().hex[:10]
+    scratch_dir = Path(config.temp_dir) / f"job_{job_id}"
+    images_dir = scratch_dir / "images"
+
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    images_dir.mkdir(exist_ok=True)
+
+    try:
+        tg_file = await photo.get_file()
+        photo_bytes = bytes(await tg_file.download_as_bytearray())
+
+        await status_msg.edit_text(
+            "⚙️ *WebAssetify:* Optimizing photo to WebP format...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        image_converter = ImageConverter()
+        out_filename = f"001_photo_{photo.file_unique_id}.webp"
+        out_path = images_dir / out_filename
+
+        res = await image_converter.convert_direct_image(
+            photo_bytes,
+            out_path,
+            source_name=f"telegram_photo_{photo.file_unique_id}",
+        )
+
+        if not res:
+            await status_msg.edit_text("❌ *Failed to optimize photo to WebP.*", parse_mode=ParseMode.MARKDOWN)
+            return
+
+        await status_msg.edit_text(
+            "☁️ *WebAssetify:* Uploading optimized photo to Google Drive...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        savings = image_converter.total_savings
+        gdrive = GoogleDriveStorage()
+        upload_result = await gdrive.upload_pipeline(
+            scratch_dir,
+            user_id=user_id,
+            session_stats=savings,
+        )
+
+        folder_link = upload_result["web_view_link"]
+        folder_name = upload_result["folder_name"]
+
+        savings_text = ""
+        if savings.get("original_bytes", 0) > 0:
+            orig_kb = savings["original_bytes"] / 1024
+            conv_kb = savings["converted_bytes"] / 1024
+            pct = savings.get("saved_percentage", 0.0)
+            savings_text = f"💾 *Storage Saved:* {orig_kb:.1f} KB ➔ {conv_kb:.1f} KB ({pct:.1f}% reduction)\n"
+
+        final_message = (
+            "✅ *Photo Optimization & Upload Complete!*\n\n"
+            f"📁 *Folder:* `{folder_name}`\n"
+            f"🖼️ *Optimized Image:* `{out_filename}`\n"
+            f"{savings_text}"
+            f"📦 *Bundle Zip:* Included (`assets_bundle.zip`)\n"
+            f"📄 *Manifest:* Included (`manifest.json`)\n\n"
+            f"🔗 [Open Google Drive Folder]({folder_link})"
+        )
+        await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
+
+    except Exception as e:
+        logger.exception("Failed to process direct photo: %s", e)
+        try:
+            await status_msg.edit_text(f"❌ *Error processing photo:*\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+async def handle_video_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle direct Telegram video uploads."""
+    if not update.message or not update.message.video:
+        return
+
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    video = update.message.video
+    filename = video.file_name or f"video_{video.file_unique_id}.mp4"
+
+    status_msg = await update.message.reply_text(
+        f"⏳ *WebAssetify:* Downloading video `{filename}`...",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    job_id = uuid.uuid4().hex[:10]
+    scratch_dir = Path(config.temp_dir) / f"job_{job_id}"
+    videos_dir = scratch_dir / "videos"
+
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    videos_dir.mkdir(exist_ok=True)
+
+    try:
+        tg_file = await video.get_file()
+        video_bytes = bytes(await tg_file.download_as_bytearray())
+
+        raw_video_path = scratch_dir / f"raw_{video.file_unique_id}.mp4"
+        raw_video_path.write_bytes(video_bytes)
+
+        await status_msg.edit_text(
+            "⚙️ *WebAssetify:* Transcoding video to low-memory WebM (this may take a moment)...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        out_filename = f"001_{Path(filename).stem[:35]}.webm"
+        out_path = videos_dir / out_filename
+
+        success = await asyncio.to_thread(_transcode_to_webm_sync, raw_video_path, out_path)
+        raw_video_path.unlink(missing_ok=True)
+
+        if not success or not out_path.exists():
+            await status_msg.edit_text("❌ *Failed to transcode video to WebM.*", parse_mode=ParseMode.MARKDOWN)
+            return
+
+        await status_msg.edit_text(
+            "☁️ *WebAssetify:* Uploading transcoded video to Google Drive...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        orig_size = len(video_bytes)
+        conv_size = out_path.stat().st_size
+        saved = max(0, orig_size - conv_size)
+        pct = (saved / orig_size * 100) if orig_size > 0 else 0.0
+
+        video_stats = {
+            "original_bytes": orig_size,
+            "converted_bytes": conv_size,
+            "saved_bytes": saved,
+            "saved_percentage": pct,
+        }
+
+        gdrive = GoogleDriveStorage()
+        upload_result = await gdrive.upload_pipeline(
+            scratch_dir,
+            user_id=user_id,
+            session_stats=video_stats,
+        )
+
+        folder_link = upload_result["web_view_link"]
+        folder_name = upload_result["folder_name"]
+
+        orig_mb = orig_size / (1024 * 1024)
+        conv_mb = conv_size / (1024 * 1024)
+        savings_text = f"💾 *Storage Saved:* {orig_mb:.2f} MB ➔ {conv_mb:.2f} MB ({pct:.1f}% reduction)\n"
+
+        final_message = (
+            "✅ *Video Transcoding & Upload Complete!*\n\n"
+            f"📁 *Folder:* `{folder_name}`\n"
+            f"🎥 *Transcoded Video:* `{out_filename}`\n"
+            f"{savings_text}"
+            f"📦 *Bundle Zip:* Included (`assets_bundle.zip`)\n"
+            f"📄 *Manifest:* Included (`manifest.json`)\n\n"
+            f"🔗 [Open Google Drive Folder]({folder_link})"
+        )
+        await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
+
+    except Exception as e:
+        logger.exception("Failed to process direct video: %s", e)
+        try:
+            await status_msg.edit_text(f"❌ *Error processing video:*\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
 async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle incoming document uploads (.md, .txt, .pdf, .docx)."""
+    """Handle incoming document uploads (documents or direct image files)."""
     if not update.message or not update.message.document:
         return
 
@@ -272,11 +538,66 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
     filename = document.file_name or "document"
     ext = Path(filename).suffix.lower()
 
+    # Check if uploaded as a direct uncompressed image
+    if ext in IMAGE_EXTENSIONS:
+        user_id = update.effective_user.id if update.effective_user else "unknown"
+        status_msg = await update.message.reply_text(
+            f"⏳ *WebAssetify:* Downloading image `{filename}`...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        job_id = uuid.uuid4().hex[:10]
+        scratch_dir = Path(config.temp_dir) / f"job_{job_id}"
+        images_dir = scratch_dir / "images"
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        images_dir.mkdir(exist_ok=True)
+
+        try:
+            tg_file = await document.get_file()
+            img_bytes = bytes(await tg_file.download_as_bytearray())
+
+            await status_msg.edit_text("⚙️ *WebAssetify:* Converting image to WebP...", parse_mode=ParseMode.MARKDOWN)
+            image_converter = ImageConverter()
+            out_filename = f"001_{Path(filename).stem[:35]}.webp"
+            out_path = images_dir / out_filename
+
+            res = await image_converter.convert_direct_image(img_bytes, out_path, source_name=filename)
+            if not res:
+                await status_msg.edit_text("❌ *Failed to convert image.*", parse_mode=ParseMode.MARKDOWN)
+                return
+
+            await status_msg.edit_text("☁️ *WebAssetify:* Uploading to Google Drive...", parse_mode=ParseMode.MARKDOWN)
+            gdrive = GoogleDriveStorage()
+            upload_result = await gdrive.upload_pipeline(scratch_dir, user_id=user_id, session_stats=image_converter.total_savings)
+
+            folder_link = upload_result["web_view_link"]
+            savings = image_converter.total_savings
+            savings_text = ""
+            if savings.get("original_bytes", 0) > 0:
+                orig_kb = savings["original_bytes"] / 1024
+                conv_kb = savings["converted_bytes"] / 1024
+                pct = savings.get("saved_percentage", 0.0)
+                savings_text = f"💾 *Storage Saved:* {orig_kb:.1f} KB ➔ {conv_kb:.1f} KB ({pct:.1f}% reduction)\n"
+
+            final_message = (
+                "✅ *Image Optimization & Upload Complete!*\n\n"
+                f"📁 *Folder:* `{upload_result['folder_name']}`\n"
+                f"🖼️ *Optimized Image:* `{out_filename}`\n"
+                f"{savings_text}"
+                f"🔗 [Open Google Drive Folder]({folder_link})"
+            )
+            await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.exception("Failed to process document image: %s", e)
+            await status_msg.edit_text(f"❌ *Error:*\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
+        finally:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+        return
+
     if ext not in DOCUMENT_EXTENSIONS:
         supported = ", ".join(sorted(DOCUMENT_EXTENSIONS))
         await update.message.reply_text(
             f"⚠️ Unsupported file type `{ext}`.\n"
-            f"Please upload one of the following: `{supported}`.",
+            f"Please upload one of the following: `{supported}`, or an image file.",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -326,7 +647,6 @@ async def run_server() -> None:
             "Keep-alive HTTP server remains running on port %d.",
             config.port,
         )
-        # Keep alive HTTP server only
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -343,8 +663,17 @@ async def run_server() -> None:
 
     telegram_app.add_handler(CommandHandler("start", start_command))
     telegram_app.add_handler(CommandHandler("help", help_command))
+    telegram_app.add_handler(CommandHandler("status", status_command))
+    telegram_app.add_handler(CommandHandler("ping", ping_command))
+
     telegram_app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)
+    )
+    telegram_app.add_handler(
+        MessageHandler(filters.PHOTO, handle_photo_message)
+    )
+    telegram_app.add_handler(
+        MessageHandler(filters.VIDEO, handle_video_message)
     )
     telegram_app.add_handler(
         MessageHandler(filters.Document.ALL, handle_document_message)

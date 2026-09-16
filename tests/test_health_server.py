@@ -15,6 +15,8 @@ async def test_health_endpoint():
     data = json.loads(resp.text)
     assert data["status"] == "alive"
     assert data["service"] == "WebAssetify"
+    assert "uptime_seconds" in data
+    assert data["uptime_seconds"] >= 0
 
 
 @pytest.mark.asyncio
