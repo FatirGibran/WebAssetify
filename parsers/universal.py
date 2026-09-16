@@ -6,7 +6,11 @@ with deduplication and URL categorization.
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import re
+from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 # Regex for Markdown syntax: ![alt](url) and [text](url)
@@ -170,3 +174,69 @@ def classify_urls(urls: list[str]) -> dict[str, list[str]]:
             classified["others"].append(url)
 
     return classified
+
+
+def extract_urls_from_tabular(content: str) -> list[str]:
+    """Extract deduplicated URLs from CSV or TSV string content."""
+    if not content:
+        return []
+
+    urls: list[str] = []
+    f = io.StringIO(content)
+    try:
+        # Detect delimiter if possible, default to comma
+        sample = content[:2048]
+        delimiter = "\t" if "\t" in sample and sample.count("\t") > sample.count(",") else ","
+        reader = csv.reader(f, delimiter=delimiter)
+        for row in reader:
+            for cell in row:
+                if cell and ("http://" in cell or "https://" in cell or cell.strip().startswith("www.")):
+                    urls.extend(extract_urls(cell))
+    except Exception:
+        # Fallback to standard regex extraction
+        urls.extend(extract_urls(content))
+
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            deduped.append(u)
+    return deduped
+
+
+def extract_urls_from_json(content: str) -> list[str]:
+    """Extract deduplicated URLs from JSON string or serialized data structure."""
+    if not content:
+        return []
+
+    urls: list[str] = []
+
+    def _walk(item: Any) -> None:
+        if isinstance(item, str):
+            if "http://" in item or "https://" in item or item.strip().startswith("www."):
+                urls.extend(extract_urls(item))
+        elif isinstance(item, dict):
+            for v in item.values():
+                _walk(v)
+        elif isinstance(item, (list, tuple, set)):
+            for v in item:
+                _walk(v)
+
+    try:
+        data = json.loads(content)
+        _walk(data)
+    except Exception:
+        # Fallback to raw text extraction
+        urls.extend(extract_urls(content))
+
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            deduped.append(u)
+    return deduped
+

@@ -10,11 +10,14 @@ from parsers.universal import (
     classify_urls,
     clean_url,
     extract_urls,
+    extract_urls_from_json,
+    extract_urls_from_tabular,
     is_image_url,
     is_video_url,
 )
 from parsers.pdf_parser import extract_urls_from_pdf
 from parsers.docx_parser import extract_urls_from_docx
+from parsers.html_parser import extract_urls_from_html
 
 
 def test_clean_url():
@@ -104,3 +107,77 @@ def test_docx_parser_text_and_hyperlinks():
     assert "https://example.com/direct-in-para.png" in urls
     assert "https://example.com/table-image.png" in urls
     assert "https://example.com/xml-hyperlink.png" in urls
+
+
+def test_html_parser_extracts_all_tags():
+    sample_html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <link rel="icon" href="https://example.com/favicon.ico">
+        <style>
+            .banner { background-image: url('https://example.com/css-bg.png'); }
+        </style>
+    </head>
+    <body>
+        <a href="https://example.com/link-target">Click</a>
+        <img src="https://example.com/main.jpg" data-src="https://example.com/lazy.jpg"
+             srcset="https://example.com/small.jpg 300w, https://example.com/large.jpg 800w">
+        <video src="https://example.com/video.mp4" poster="https://example.com/poster.jpg">
+            <source src="https://example.com/source.webm" type="video/webm">
+        </video>
+        <iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"></iframe>
+        <div style="background-image: url(https://example.com/inline-style.png)"></div>
+        <p>Direct text link: https://example.com/in-text-paragraph</p>
+    </body>
+    </html>
+    """
+    urls = extract_urls_from_html(sample_html)
+    assert "https://example.com/favicon.ico" in urls
+    assert "https://example.com/css-bg.png" in urls
+    assert "https://example.com/link-target" in urls
+    assert "https://example.com/main.jpg" in urls
+    assert "https://example.com/lazy.jpg" in urls
+    assert "https://example.com/small.jpg" in urls
+    assert "https://example.com/large.jpg" in urls
+    assert "https://example.com/video.mp4" in urls
+    assert "https://example.com/poster.jpg" in urls
+    assert "https://example.com/source.webm" in urls
+    assert "https://www.youtube.com/embed/dQw4w9WgXcQ" in urls
+    assert "https://example.com/inline-style.png" in urls
+    assert "https://example.com/in-text-paragraph" in urls
+
+
+def test_tabular_parser_csv_and_tsv():
+    csv_data = """id,name,asset_url,preview
+1,Item A,https://example.com/item1.png,https://example.com/preview1.jpg
+2,Item B,https://example.com/item2.png,https://example.com/preview2.jpg
+"""
+    urls = extract_urls_from_tabular(csv_data)
+    assert len(urls) == 4
+    assert "https://example.com/item1.png" in urls
+    assert "https://example.com/preview2.jpg" in urls
+
+    tsv_data = "col1\tcol2\nval\thttps://example.com/tsv-asset.webp\n"
+    tsv_urls = extract_urls_from_tabular(tsv_data)
+    assert "https://example.com/tsv-asset.webp" in tsv_urls
+
+
+def test_json_parser():
+    json_data = """
+    {
+        "project": "WebAssetify",
+        "assets": [
+            {"type": "image", "url": "https://example.com/json-img1.png"},
+            {"type": "video", "url": "https://example.com/json-vid1.mp4"}
+        ],
+        "metadata": {
+            "thumbnail": "https://example.com/thumb.jpg"
+        }
+    }
+    """
+    urls = extract_urls_from_json(json_data)
+    assert "https://example.com/json-img1.png" in urls
+    assert "https://example.com/json-vid1.mp4" in urls
+    assert "https://example.com/thumb.jpg" in urls
+
