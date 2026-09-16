@@ -4,7 +4,7 @@ import json
 import pytest
 from aiohttp.test_utils import make_mocked_request
 
-from main import create_web_app, health_endpoint
+from main import create_web_app, health_endpoint, index_endpoint
 
 
 @pytest.mark.asyncio
@@ -22,11 +22,21 @@ async def test_health_endpoint():
 @pytest.mark.asyncio
 async def test_root_endpoint():
     req = make_mocked_request("GET", "/")
-    resp = await health_endpoint(req)
+    resp = await index_endpoint(req)
     assert resp.status == 200
     data = json.loads(resp.text)
     assert data["status"] == "alive"
     assert data["service"] == "WebAssetify"
+
+
+@pytest.mark.asyncio
+async def test_index_endpoint_html_dashboard():
+    req = make_mocked_request("GET", "/", headers={"Accept": "text/html,application/xhtml+xml"})
+    resp = await index_endpoint(req)
+    assert resp.status == 200
+    assert "WebAssetify" in resp.text
+    assert "Live & Operational" in resp.text
+    assert resp.content_type == "text/html"
 
 
 def test_app_router_routes():

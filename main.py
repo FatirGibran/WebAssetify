@@ -2,7 +2,7 @@
 
 Runs a keep-alive aiohttp micro-webserver concurrently with python-telegram-bot v20+ polling loop
 in the same asyncio event loop. Supports URL extraction from documents, direct media optimization,
-and Google Drive delivery with manifest reports.
+Google Drive delivery with manifest reports, an interactive web dashboard, and Telegram inline keyboards.
 """
 
 from __future__ import annotations
@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import web
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -70,10 +71,155 @@ async def health_endpoint(request: web.Request) -> web.Response:
     })
 
 
+async def index_endpoint(request: web.Request) -> web.Response:
+    """Serve a modern web dashboard to browser visitors and JSON to monitors."""
+    accept = request.headers.get("Accept", "")
+    if "text/html" in accept:
+        uptime_seconds = int(time.time() - START_TIME)
+        hours, remainder = divmod(uptime_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        safe_cfg = config.to_safe_dict()
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebAssetify — Live Status Dashboard</title>
+    <style>
+        :root {{
+            --bg: #0b0f19;
+            --card-bg: rgba(22, 30, 49, 0.7);
+            --border: rgba(255, 255, 255, 0.08);
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.3);
+            --success: #10b981;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
+        body {{
+            background-color: var(--bg);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background-image: radial-gradient(circle at top, #1e293b 0%, #0b0f19 100%);
+        }}
+        .container {{
+            max-width: 640px;
+            width: 100%;
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }}
+        .header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }}
+        .title {{ font-size: 26px; font-weight: 700; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px; }}
+        .badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(16, 185, 129, 0.12);
+            color: var(--success);
+            padding: 6px 14px;
+            border-radius: 9999px;
+            font-size: 13px;
+            font-weight: 600;
+            border: 1px solid rgba(16, 185, 129, 0.25);
+        }}
+        .pulse {{
+            width: 8px; height: 8px; background: var(--success); border-radius: 50%;
+            box-shadow: 0 0 10px var(--success);
+            animation: pulse 2s infinite;
+        }}
+        @keyframes pulse {{
+            0% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }}
+            70% {{ transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }}
+            100% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }}
+        }}
+        .subtitle {{ color: var(--text-muted); margin-bottom: 28px; font-size: 14px; line-height: 1.6; }}
+        .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 32px; }}
+        .card {{
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px;
+        }}
+        .card-label {{ font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }}
+        .card-val {{ font-size: 20px; font-weight: 700; color: var(--text-main); }}
+        .actions {{ display: flex; gap: 12px; }}
+        .btn {{
+            flex: 1;
+            padding: 14px 20px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            text-align: center;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }}
+        .btn-primary {{
+            background: var(--accent);
+            color: #0b0f19;
+            box-shadow: 0 4px 14px var(--accent-glow);
+        }}
+        .btn-primary:hover {{ background: #7dd3fc; }}
+        .btn-secondary {{
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-main);
+            border: 1px solid var(--border);
+        }}
+        .btn-secondary:hover {{ background: rgba(255, 255, 255, 0.1); }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">⚡ WebAssetify</div>
+            <div class="badge"><div class="pulse"></div> Live & Operational</div>
+        </div>
+        <p class="subtitle">
+            High-performance asynchronous asset harvesting and web optimization pipeline (.webp/.webm) with automated Google Drive delivery.
+        </p>
+        <div class="grid">
+            <div class="card">
+                <div class="card-label">Uptime</div>
+                <div class="card-val">{hours}h {minutes}m {seconds}s</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Server Port</div>
+                <div class="card-val">{config.port}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">WebP Quality</div>
+                <div class="card-val">{config.webp_quality}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Max Dimension</div>
+                <div class="card-val">{config.max_image_dimension}px</div>
+            </div>
+        </div>
+        <div class="actions">
+            <a href="https://github.com/Fatirrr08/WebAssetify" target="_blank" class="btn btn-secondary">🐙 GitHub Repo</a>
+            <a href="/health" class="btn btn-primary">🔍 JSON Health API</a>
+        </div>
+    </div>
+</body>
+</html>"""
+        return web.Response(text=html, content_type="text/html")
+    return await health_endpoint(request)
+
+
 def create_web_app() -> web.Application:
     """Create the aiohttp micro-server application."""
     app = web.Application()
-    app.router.add_get("/", health_endpoint)
+    app.router.add_get("/", index_endpoint)
     app.router.add_get("/health", health_endpoint)
     return app
 
@@ -94,8 +240,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• Send a photo or video directly.\n"
         "• Type /status to view system status and settings."
     )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📖 Help Guide", callback_data="cmd_help"),
+            InlineKeyboardButton("📊 System Status", callback_data="cmd_status"),
+        ],
+        [
+            InlineKeyboardButton("🐙 GitHub Repository", url="https://github.com/Fatirrr08/WebAssetify"),
+        ],
+    ])
     if update.message:
-        await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            welcome_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -119,8 +278,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Outputs:*\n"
         "A public Google Drive folder containing `images/`, `videos/`, `manifest.json`, and `assets_bundle.zip`."
     )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 System Status", callback_data="cmd_status"),
+            InlineKeyboardButton("🐙 GitHub", url="https://github.com/Fatirrr08/WebAssetify"),
+        ]
+    ])
     if update.message:
-        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            help_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -143,8 +312,21 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"• *Drive Parent Folder:* `{safe_cfg['gdrive_parent_folder_id']}`\n"
         f"• *Drive Credentials:* `{safe_cfg['gdrive_service_account_json']}`"
     )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 Refresh Status", callback_data="cmd_status"),
+            InlineKeyboardButton("📖 Help Guide", callback_data="cmd_help"),
+        ],
+        [
+            InlineKeyboardButton("🐙 GitHub Repository", url="https://github.com/Fatirrr08/WebAssetify"),
+        ],
+    ])
     if update.message:
-        await update.message.reply_text(status_text, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            status_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
 
 
 async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -154,6 +336,73 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         msg = await update.message.reply_text("🏓 Pong...")
         elapsed_ms = int((time.time() - start) * 1000)
         await msg.edit_text(f"🏓 *Pong!* `({elapsed_ms} ms)`", parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle interactive inline keyboard button callbacks."""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if query.data == "cmd_help":
+        help_text = (
+            "📖 *WebAssetify Help*\n\n"
+            "*Supported Documents:*\n"
+            "• `.md` / `.txt` - Plain text and Markdown links\n"
+            "• `.pdf` - Visible text & URI hyperlink annotations\n"
+            "• `.docx` - Word text, tables, & internal XML hyperlinks\n"
+            "• `.html` / `.htm` - HTML tags (`img`, `video`, `source`, `a`, inline CSS)\n"
+            "• `.csv` / `.tsv` - Tabular spreadsheets with URL columns\n"
+            "• `.json` - JSON files containing media links\n\n"
+            "*Direct Media:*\n"
+            "• Send any Photo or Video directly in chat.\n\n"
+            "*Outputs:*\n"
+            "A public Google Drive folder containing `images/`, `videos/`, `manifest.json`, and `assets_bundle.zip`."
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📊 System Status", callback_data="cmd_status"),
+                InlineKeyboardButton("🐙 GitHub", url="https://github.com/Fatirrr08/WebAssetify"),
+            ]
+        ])
+        try:
+            await query.edit_message_text(help_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+        except Exception:
+            pass
+
+    elif query.data == "cmd_status":
+        uptime_seconds = int(time.time() - START_TIME)
+        hours, remainder = divmod(uptime_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{hours}h {minutes}m {seconds}s"
+        safe_cfg = config.to_safe_dict()
+
+        status_text = (
+            "📊 *WebAssetify System Status*\n\n"
+            f"• *Status:* 🟢 Operational\n"
+            f"• *Uptime:* `{uptime_str}`\n"
+            f"• *Server Port:* `{config.port}`\n"
+            f"• *WebP Quality:* `{config.webp_quality}`\n"
+            f"• *Max Image Dimension:* `{config.max_image_dimension}px`\n"
+            f"• *Max Video Height:* `{config.max_video_height}p`\n"
+            f"• *Supported Docs:* `{len(DOCUMENT_EXTENSIONS)} formats`\n"
+            f"• *Drive Parent Folder:* `{safe_cfg['gdrive_parent_folder_id']}`\n"
+            f"• *Drive Credentials:* `{safe_cfg['gdrive_service_account_json']}`"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 Refresh Status", callback_data="cmd_status"),
+                InlineKeyboardButton("📖 Help Guide", callback_data="cmd_help"),
+            ],
+            [
+                InlineKeyboardButton("🐙 GitHub Repository", url="https://github.com/Fatirrr08/WebAssetify"),
+            ],
+        ])
+        try:
+            await query.edit_message_text(status_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+        except Exception:
+            pass
 
 
 async def _process_pipeline(
@@ -302,10 +551,15 @@ async def _process_pipeline(
             f"📄 *Manifest:* Included (`manifest.json`)\n\n"
             f"🔗 [Open Google Drive Folder]({folder_link})"
         )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📂 Open Google Drive Folder", url=folder_link)],
+            [InlineKeyboardButton("📊 View System Status", callback_data="cmd_status")],
+        ])
         await status_msg.edit_text(
             final_message,
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=False,
+            reply_markup=keyboard,
         )
 
     except Exception as e:
@@ -422,7 +676,10 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
             f"📄 *Manifest:* Included (`manifest.json`)\n\n"
             f"🔗 [Open Google Drive Folder]({folder_link})"
         )
-        await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📂 Open Google Drive Folder", url=folder_link)],
+        ])
+        await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
 
     except Exception as e:
         logger.exception("Failed to process direct photo: %s", e)
@@ -517,7 +774,10 @@ async def handle_video_message(update: Update, context: ContextTypes.DEFAULT_TYP
             f"📄 *Manifest:* Included (`manifest.json`)\n\n"
             f"🔗 [Open Google Drive Folder]({folder_link})"
         )
-        await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📂 Open Google Drive Folder", url=folder_link)],
+        ])
+        await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
 
     except Exception as e:
         logger.exception("Failed to process direct video: %s", e)
@@ -585,7 +845,10 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
                 f"{savings_text}"
                 f"🔗 [Open Google Drive Folder]({folder_link})"
             )
-            await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📂 Open Google Drive Folder", url=folder_link)],
+            ])
+            await status_msg.edit_text(final_message, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
         except Exception as e:
             logger.exception("Failed to process document image: %s", e)
             await status_msg.edit_text(f"❌ *Error:*\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
@@ -665,6 +928,7 @@ async def run_server() -> None:
     telegram_app.add_handler(CommandHandler("help", help_command))
     telegram_app.add_handler(CommandHandler("status", status_command))
     telegram_app.add_handler(CommandHandler("ping", ping_command))
+    telegram_app.add_handler(CallbackQueryHandler(handle_callback_query))
 
     telegram_app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)
