@@ -109,3 +109,29 @@ async def test_convert_direct_image_and_savings(tmp_path: Path):
     assert savings["saved_bytes"] >= 0
     assert 0.0 <= savings["saved_percentage"] <= 100.0
 
+
+def test_process_animated_gif_to_animated_webp(tmp_path: Path):
+    # Create multi-frame animated GIF
+    frame1 = Image.new("RGBA", (100, 100), color="blue")
+    frame2 = Image.new("RGBA", (100, 100), color="red")
+    gif_buf = io.BytesIO()
+    frame1.save(
+        gif_buf,
+        format="GIF",
+        save_all=True,
+        append_images=[frame2],
+        duration=150,
+        loop=0,
+    )
+    raw_gif_bytes = gif_buf.getvalue()
+
+    output_webp = tmp_path / "animated.webp"
+    success = _process_image_to_webp(raw_gif_bytes, output_webp, quality=80)
+
+    assert success is True
+    assert output_webp.exists()
+    with Image.open(output_webp) as loaded:
+        assert loaded.format == "WEBP"
+        assert getattr(loaded, "is_animated", False) is True
+        assert loaded.n_frames == 2
+

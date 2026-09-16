@@ -19,6 +19,7 @@ import aiohttp
 from PIL import Image, ImageOps
 
 from config import config
+from parsers.security import is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,45 @@ def _process_image_to_webp(
 ) -> bool:
     """Synchronous worker function to convert image bytes to .webp via Pillow.
 
-    Includes EXIF orientation correction and dimension downscaling.
+    Includes animated GIF support, EXIF orientation correction, and dimension downscaling.
     Offloaded to asyncio.to_thread.
     """
     try:
         with Image.open(io.BytesIO(image_data)) as raw_img:
+            # Handle animated images (e.g. animated GIFs)
+            if getattr(raw_img, "is_animated", False) and getattr(raw_img, "n_frames", 1) > 1:
+                frames: list[Image.Image] = []
+                durations: list[int] = []
+                resample = getattr(Image, "Resampling", Image).LANCZOS
+                for frame_idx in range(raw_img.n_frames):
+                    raw_img.seek(frame_idx)
+                    frame = raw_img.copy()
+                    frame = ImageOps.exif_transpose(frame) or frame
+                    if max_dimension and (frame.width > max_dimension or frame.height > max_dimension):
+                        ratio = min(max_dimension / frame.width, max_dimension / frame.height)
+                        new_w = max(1, int(frame.width * ratio))
+                        new_h = max(1, int(frame.height * ratio))
+                        frame = frame.resize((new_w, new_h), resample=resample)
+                    if frame.mode not in ("RGB", "RGBA"):
+                        frame = frame.convert("RGBA" if "transparency" in frame.info else "RGB")
+                    frames.append(frame)
+                    durations.append(raw_img.info.get("duration", 100))
+
+                loop = raw_img.info.get("loop", 0)
+                if frames:
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    frames[0].save(
+                        output_path,
+                        format="WEBP",
+                        save_all=True,
+                        append_images=frames[1:],
+                        duration=durations,
+                        loop=loop,
+                        quality=quality,
+                        optimize=True,
+                    )
+                    return True
+
             # 1. Correct orientation using EXIF transpose
             img = ImageOps.exif_transpose(raw_img)
             if img is None:
@@ -183,6 +218,10 @@ class ImageConverter:
         """Download an image from a URL and optimize it into a .webp file."""
         filename = self._generate_filename(url, index)
         output_path = output_dir / filename
+
+        if not is_safe_url(url):
+            logger.warning("SSRF Guard blocked unsafe image download: %s", url)
+            return None
 
         async with self.semaphore:
             try:
