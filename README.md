@@ -1,6 +1,6 @@
 # ⚡ WebAssetify
 
-[![CI Pipeline](https://github.com/Fatirrr08/WebAssetify/actions/workflows/ci.yml/badge.svg)](https://github.com/Fatirrr08/WebAssetify/actions/workflows/ci.yml)
+[![CI Pipeline](https://github.com/FatirGibran/WebAssetify/actions/workflows/ci.yml/badge.svg)](https://github.com/FatirGibran/WebAssetify/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11-blue.svg)](https://www.python.org/)
 [![Telegram Bot](https://img.shields.io/badge/telegram-bot%20v20%2B-2CA5E0.svg?logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
 [![Google Drive API](https://img.shields.io/badge/storage-Google%20Drive%20v3-34A853.svg?logo=googledrive&logoColor=white)](https://developers.google.com/drive)

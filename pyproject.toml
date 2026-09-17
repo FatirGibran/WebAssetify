@@ -46,9 +46,9 @@ webassetify = "main:main"
 webassetify-cli = "cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Fatirrr08/WebAssetify"
-Repository = "https://github.com/Fatirrr08/WebAssetify.git"
-Issues = "https://github.com/Fatirrr08/WebAssetify/issues"
+Homepage = "https://github.com/FatirGibran/WebAssetify"
+Repository = "https://github.com/FatirGibran/WebAssetify.git"
+Issues = "https://github.com/FatirGibran/WebAssetify/issues"
 
 [tool.pytest.ini_options]
 minversion = "8.0"
