@@ -18,6 +18,15 @@ def test_build_parser():
     assert args.quality == 90
 
 
+def test_cli_version(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["--version"])
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "1.1.0" in captured.out or "1.1.0" in captured.err
+
+
 def test_parse_input_source_file(tmp_path: Path):
     doc_file = tmp_path / "sample.html"
     doc_file.write_text('<a href="https://example.com/asset.png">Download</a>', encoding="utf-8")

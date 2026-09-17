@@ -146,6 +146,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="⚡ WebAssetify: Automated Media Harvester and Web Optimizer (.webp / .webm)",
     )
     parser.add_argument(
+        "-V", "--version",
+        action="version",
+        version="%(prog)s 1.1.0",
+        help="Show program version and exit",
+    )
+    parser.add_argument(
         "source",
         help="Input document file path (.pdf, .docx, .html, .csv, .json, .md, .txt) or direct URL/text",
     )

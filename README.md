@@ -141,7 +141,7 @@ Create a `.env` file in the root directory (refer to [`.env.example`](.env.examp
 
 ### 2. Clone and Setup Environment
 ```bash
-git clone https://github.com/Fatirrr08/WebAssetify.git
+git clone https://github.com/FatirGibran/WebAssetify.git
 cd WebAssetify
 
 python3 -m venv .venv
